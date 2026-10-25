@@ -145,12 +145,12 @@ contract GigEscrowTest is Test {
         assertEq(uint256(d.state), uint256(GigEscrow.DealState.Refunded));
     }
 
-    // ── Test 3: Third Party Approval Reverts ─────────────────────────────────
+    // ── Test 3: Third Party & Unauthorized Approvals Revert ─────────────────
     function test_OnlyBuyerOrSellerCanApprove() public {
         vm.prank(buyer);
         uint256 dealId = escrow.createDeal{value: DEAL_AMOUNT}(seller, DEAL_AMOUNT);
 
-        // Third party attempt
+        // Third party attempt reverts
         vm.prank(thirdParty);
         vm.expectRevert(GigEscrow.Unauthorized.selector);
         escrow.approveCompletion(dealId);
@@ -159,11 +159,28 @@ contract GigEscrowTest is Test {
         vm.prank(buyer);
         vm.expectRevert(GigEscrow.DealNotFound.selector);
         escrow.approveCompletion(999);
+
+        // Buyer approves once
+        vm.prank(buyer);
+        escrow.approveCompletion(dealId);
+
+        // Buyer approving a second time reverts AlreadyApproved
+        vm.prank(buyer);
+        vm.expectRevert(GigEscrow.AlreadyApproved.selector);
+        escrow.approveCompletion(dealId);
+
+        // Seller approves once
+        vm.prank(seller);
+        escrow.approveCompletion(dealId);
+
+        // Seller approving a second time reverts InvalidState (already completed)
+        vm.prank(seller);
+        vm.expectRevert();
+        escrow.approveCompletion(dealId);
     }
 
     // ── Test 4: Transfers of the SBT Revert ─────────────────────────────────
     function test_SBTTransfersRevert() public {
-        // Mint an SBT to seller via happy path
         vm.prank(buyer);
         uint256 dealId = escrow.createDeal{value: DEAL_AMOUNT}(seller, DEAL_AMOUNT);
 
@@ -190,34 +207,174 @@ contract GigEscrowTest is Test {
 
     // ── Test 5: Reentrancy Attack on Release Path ────────────────────────────
     function test_ReentrancyAttackBlocked() public {
-        // Deploy attacker contract as seller
         ReentrancyAttacker attacker = new ReentrancyAttacker(address(escrow));
         address payable attackerAddr = payable(address(attacker));
 
-        // Buyer creates deal with attacker
         vm.prank(buyer);
         uint256 dealId = escrow.createDeal{value: DEAL_AMOUNT}(attackerAddr, DEAL_AMOUNT);
 
         attacker.setTargetDeal(dealId);
 
-        // Both approve completion
         vm.prank(buyer);
         escrow.approveCompletion(dealId);
 
         vm.prank(attackerAddr);
         escrow.approveCompletion(dealId);
 
-        // Release: triggers attacker's receive() which attempts reentrant call to release()
         escrow.release(dealId);
 
-        // Verify reentrancy was blocked and did NOT succeed
         assertTrue(attacker.attackAttempted(), "Attacker should have attempted reentrancy");
         assertFalse(attacker.reentrancySucceeded(), "Reentrancy attack should have failed");
 
-        // Verify deal state is Released and attacker only received the initial amount
         GigEscrow.Deal memory d = escrow.getDeal(dealId);
         assertEq(uint256(d.state), uint256(GigEscrow.DealState.Released));
         assertEq(address(attacker).balance, DEAL_AMOUNT);
         assertEq(address(escrow).balance, 0);
+    }
+
+    // ── Test 6: Deal Creation Input Validation ──────────────────────────────
+    function test_CreateDeal_ValidationReverts() public {
+        // Zero amount reverts
+        vm.prank(buyer);
+        vm.expectRevert(GigEscrow.InvalidAmount.selector);
+        escrow.createDeal{value: 0}(seller, 0);
+
+        // Mismatched amount reverts
+        vm.prank(buyer);
+        vm.expectRevert(GigEscrow.InvalidAmount.selector);
+        escrow.createDeal{value: 1 ether}(seller, 2 ether);
+
+        // Zero address seller reverts
+        vm.prank(buyer);
+        vm.expectRevert(GigEscrow.InvalidParties.selector);
+        escrow.createDeal{value: 1 ether}(payable(address(0)), 1 ether);
+
+        // Buyer as seller reverts
+        vm.prank(buyer);
+        vm.expectRevert(GigEscrow.InvalidParties.selector);
+        escrow.createDeal{value: 1 ether}(buyer, 1 ether);
+    }
+
+    // ── Test 7: Release on Incomplete Deal Reverts ───────────────────────────
+    function test_Release_InvalidStateReverts() public {
+        vm.prank(buyer);
+        uint256 dealId = escrow.createDeal{value: DEAL_AMOUNT}(seller, DEAL_AMOUNT);
+
+        // Deal is Funded, not Completed -> release must revert
+        vm.expectRevert();
+        escrow.release(dealId);
+
+        // Release non-existent deal reverts
+        vm.expectRevert(GigEscrow.DealNotFound.selector);
+        escrow.release(999);
+    }
+
+    // ── Test 8: Refund Edge Cases ───────────────────────────────────────────
+    function test_Refund_EdgeCases() public {
+        vm.prank(buyer);
+        uint256 dealId = escrow.createDeal{value: DEAL_AMOUNT}(seller, DEAL_AMOUNT);
+
+        // Third party calling refund reverts Unauthorized
+        vm.warp(block.timestamp + 15 days);
+        vm.prank(thirdParty);
+        vm.expectRevert(GigEscrow.Unauthorized.selector);
+        escrow.refund(dealId);
+
+        // Non-existent deal reverts
+        vm.prank(buyer);
+        vm.expectRevert(GigEscrow.DealNotFound.selector);
+        escrow.refund(999);
+    }
+
+    // ── Test 9: Dispute Lifecycle and Resolution ────────────────────────────
+    function test_DisputeLifecycleAndResolution() public {
+        vm.prank(buyer);
+        uint256 dealId = escrow.createDeal{value: DEAL_AMOUNT}(seller, DEAL_AMOUNT);
+
+        // Third party cannot dispute
+        vm.prank(thirdParty);
+        vm.expectRevert(GigEscrow.Unauthorized.selector);
+        escrow.raiseDispute(dealId);
+
+        // Buyer raises dispute
+        vm.prank(buyer);
+        escrow.raiseDispute(dealId);
+
+        GigEscrow.Deal memory d = escrow.getDeal(dealId);
+        assertEq(uint256(d.state), uint256(GigEscrow.DealState.Disputed));
+
+        // When in dispute, approvals revert
+        vm.prank(buyer);
+        vm.expectRevert(GigEscrow.DealFrozenInDispute.selector);
+        escrow.approveCompletion(dealId);
+
+        // When in dispute, refund reverts even after deadline
+        vm.warp(block.timestamp + 20 days);
+        vm.prank(buyer);
+        vm.expectRevert(GigEscrow.DealFrozenInDispute.selector);
+        escrow.refund(dealId);
+
+        // Non-owner cannot resolve dispute
+        vm.prank(thirdParty);
+        vm.expectRevert();
+        escrow.resolveDispute(dealId, 0.5 ether, 0.5 ether);
+
+        // Invalid split sum reverts
+        vm.expectRevert(GigEscrow.InvalidSplit.selector);
+        escrow.resolveDispute(dealId, 0.4 ether, 0.4 ether); // 0.8 != 1.0
+
+        // Owner resolves dispute: 0.3 ether to buyer, 0.7 ether to seller
+        uint256 buyerPre = buyer.balance;
+        uint256 sellerPre = seller.balance;
+
+        escrow.resolveDispute(dealId, 0.3 ether, 0.7 ether);
+
+        assertEq(buyer.balance, buyerPre + 0.3 ether);
+        assertEq(seller.balance, sellerPre + 0.7 ether);
+        assertEq(address(escrow).balance, 0);
+
+        d = escrow.getDeal(dealId);
+        assertEq(uint256(d.state), uint256(GigEscrow.DealState.Released));
+    }
+
+    // ── Test 10: Owner Configuration & Admin Functions ──────────────────────
+    function test_AdminFunctions() public {
+        // Update SBT contract
+        address newSBT = makeAddr("newSBT");
+        escrow.setSBTContract(newSBT);
+        assertEq(address(escrow.sbtContract()), newSBT);
+
+        // Zero address reverts
+        vm.expectRevert(GigEscrow.ZeroAddress.selector);
+        escrow.setSBTContract(address(0));
+
+        // Non-owner cannot set SBT contract
+        vm.prank(thirdParty);
+        vm.expectRevert();
+        escrow.setSBTContract(newSBT);
+
+        // ReputationSBT admin checks
+        vm.prank(thirdParty);
+        vm.expectRevert();
+        sbt.setEscrowContract(makeAddr("test"));
+
+        vm.expectRevert(ReputationSBT.ZeroAddress.selector);
+        sbt.setEscrowContract(address(0));
+
+        // Mint directly from non-escrow reverts
+        vm.prank(thirdParty);
+        vm.expectRevert(ReputationSBT.OnlyEscrowAllowed.selector);
+        sbt.mint(seller, 10, "Direct mint attempt");
+
+        // Mint to zero address reverts
+        vm.prank(address(escrow));
+        vm.expectRevert(ReputationSBT.ZeroAddress.selector);
+        sbt.mint(address(0), 10, "Zero recipient");
+
+        // Total minted check
+        assertEq(sbt.totalMinted(), 0);
+
+        // ERC-5192 interface support
+        assertTrue(sbt.supportsInterface(0xb45a3c0e));
     }
 }

@@ -7,6 +7,8 @@ import {
   DEAL_ACTIONS,
   generateNegotiationPlan,
 } from "../state/dealMachine.js";
+import { getAuthToken } from "../utils/auth.js";
+import { track } from "../utils/analytics.js";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -49,6 +51,31 @@ export default function NegotiationModal({
   const eventSourceRef = useRef(null);
   const abortControllerRef = useRef(null);
 
+  // Safe modal close ensuring all connections & timers are disposed
+  const handleSafeClose = useCallback(() => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setBackendLoading(false);
+    onClose?.();
+  }, [onClose]);
+
+  // Close safely on ESC key
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape" && isOpen) {
+        handleSafeClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, handleSafeClose]);
+
   // Fallback simulator if backend is offline
   const startLocalSimulation = useCallback(() => {
     if (!dealState.gig) return;
@@ -68,6 +95,10 @@ export default function NegotiationModal({
           dispatch({
             type: DEAL_ACTIONS.RESOLVE_NEGOTIATION,
             payload: { success: true, agreedPrice: generatedPlan.agreedPrice },
+          });
+          track("deal_agreed", {
+            gig_id: dealState.gig?.id,
+            agreed_price: generatedPlan.agreedPrice,
           });
           setActiveTab("escrow");
         } else {
@@ -132,9 +163,15 @@ export default function NegotiationModal({
     abortControllerRef.current = controller;
 
     try {
+      const token = await getAuthToken();
+      const headers = { "Content-Type": "application/json" };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
       const response = await fetch(`${API_URL}/negotiations`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           gig_id: dealState.gig.id,
           user_id: "user-anon",
@@ -145,7 +182,8 @@ export default function NegotiationModal({
       });
 
       if (!response.ok) {
-        throw new Error(`FastAPI returned HTTP status ${response.status}`);
+        const errJson = await response.json().catch(() => ({}));
+        throw new Error(errJson.detail || `FastAPI returned HTTP status ${response.status}`);
       }
 
       const data = await response.json();
@@ -209,6 +247,10 @@ export default function NegotiationModal({
               type: DEAL_ACTIONS.RESOLVE_NEGOTIATION,
               payload: { success: true, agreedPrice: res.price },
             });
+            track("deal_agreed", {
+              gig_id: dealState.gig?.id,
+              agreed_price: res.price,
+            });
             setActiveTab("escrow");
           } else {
             dispatch({
@@ -233,10 +275,10 @@ export default function NegotiationModal({
       };
     } catch (err) {
       if (err.name === "AbortError") return;
-      console.warn("FastAPI backend unreachable:", err);
+      console.warn("FastAPI backend connection error:", err);
       setBackendLoading(false);
       setBackendError(
-        `Backend service at ${API_URL} is unreachable. Ensure the FastAPI server is running with 'uvicorn main:app --reload', or use the local simulator.`
+        `Unable to connect to the negotiation service at ${API_URL}. The server may be offline or starting up. You can retry connection or switch to the autonomous local simulator.`
       );
     }
   }, [dealState.gig, dealState.userBudget, dispatch]);
@@ -300,10 +342,14 @@ export default function NegotiationModal({
     if (dealState.buyerApproved && dealState.sellerApproved && dealState.status !== DEAL_STATES.COMPLETED) {
       const timer = setTimeout(() => {
         dispatch({ type: DEAL_ACTIONS.COMPLETE_DEAL });
+        track("deal_completed", {
+          gig_id: dealState.gig?.id,
+          amount: dealState.agreedPrice,
+        });
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [dealState.buyerApproved, dealState.sellerApproved, dealState.status, dispatch]);
+  }, [dealState.buyerApproved, dealState.sellerApproved, dealState.status, dealState.gig, dealState.agreedPrice, dispatch]);
 
   if (!isOpen || !dealState.gig) return null;
 
@@ -331,6 +377,10 @@ export default function NegotiationModal({
             dispatch({
               type: DEAL_ACTIONS.RESOLVE_NEGOTIATION,
               payload: { success: true, agreedPrice: result.agreed_price },
+            });
+            track("deal_agreed", {
+              gig_id: gig?.id,
+              agreed_price: result.agreed_price,
             });
             setActiveTab("escrow");
           } else {
@@ -362,6 +412,10 @@ export default function NegotiationModal({
         dispatch({
           type: DEAL_ACTIONS.RESOLVE_NEGOTIATION,
           payload: { success: true, agreedPrice: plan.agreedPrice },
+        });
+        track("deal_agreed", {
+          gig_id: gig?.id,
+          agreed_price: plan.agreedPrice,
         });
         setActiveTab("escrow");
       } else {
@@ -420,8 +474,8 @@ export default function NegotiationModal({
           )}
 
           <button
-            onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-zinc-400 transition hover:bg-white/10 hover:text-white"
+            onClick={handleSafeClose}
+            className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-full border border-white/10 text-zinc-400 transition hover:bg-white/10 hover:text-white"
             aria-label="Close deal flow"
           >
             ✕
@@ -511,18 +565,24 @@ export default function NegotiationModal({
                   <span>Backend Offline Notice</span>
                 </div>
                 <p className="mt-1 text-zinc-300 leading-relaxed">{backendError}</p>
-                <div className="mt-3 flex items-center gap-2">
+                <div className="mt-3 flex flex-wrap items-center gap-2">
                   <button
                     onClick={startBackendNegotiation}
-                    className="rounded-lg bg-amber-500/20 px-3 py-1.5 font-semibold text-amber-200 hover:bg-amber-500/30 transition border border-amber-500/30"
+                    className="min-h-[44px] rounded-lg bg-amber-500/20 px-3 py-2 font-semibold text-amber-200 hover:bg-amber-500/30 transition border border-amber-500/30 text-xs"
                   >
                     🔄 Retry FastAPI Connection
                   </button>
                   <button
                     onClick={startLocalSimulation}
-                    className="rounded-lg border border-white/10 bg-ink-800 px-3 py-1.5 font-semibold text-white hover:bg-ink-700 transition"
+                    className="min-h-[44px] rounded-lg border border-white/10 bg-ink-800 px-3 py-2 font-semibold text-white hover:bg-ink-700 transition text-xs"
                   >
                     ⚡ Run Offline Simulator
+                  </button>
+                  <button
+                    onClick={handleSafeClose}
+                    className="min-h-[44px] rounded-lg border border-white/10 bg-ink-900 px-3 py-2 font-semibold text-zinc-400 hover:text-white transition text-xs"
+                  >
+                    ✕ Close Modal
                   </button>
                 </div>
               </div>
@@ -625,8 +685,8 @@ export default function NegotiationModal({
                 </h4>
                 <p className="mt-1 text-xs text-zinc-400">{dealState.noDealReason}</p>
                 <button
-                  onClick={onClose}
-                  className="mt-3 rounded-full bg-ink-800 border border-white/10 px-5 py-2 text-xs font-semibold text-white transition hover:bg-ink-700"
+                  onClick={handleSafeClose}
+                  className="mt-3 min-h-[44px] rounded-full bg-ink-800 border border-white/10 px-6 py-2.5 text-xs font-semibold text-white transition hover:bg-ink-700"
                 >
                   Close & Back to Feed
                 </button>
@@ -890,8 +950,8 @@ export default function NegotiationModal({
                     View in Profile 👤
                   </button>
                   <button
-                    onClick={onClose}
-                    className="w-full sm:w-auto rounded-full border border-white/10 bg-ink-800 px-5 py-2.5 text-xs font-semibold text-zinc-300 transition hover:bg-ink-700 hover:text-white"
+                    onClick={handleSafeClose}
+                    className="w-full sm:w-auto min-h-[44px] rounded-full border border-white/10 bg-ink-800 px-6 py-2.5 text-xs font-semibold text-zinc-300 transition hover:bg-ink-700 hover:text-white"
                   >
                     Continue Swiping →
                   </button>

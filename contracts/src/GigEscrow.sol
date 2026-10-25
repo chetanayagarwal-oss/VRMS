@@ -52,6 +52,7 @@ contract GigEscrow is ReentrancyGuard, Ownable {
     event DealReleased(uint256 indexed dealId, address indexed seller, uint256 amount, uint256 sbtTokenId);
     event DealRefunded(uint256 indexed dealId, address indexed buyer, uint256 amount);
     event DealDisputed(uint256 indexed dealId, address indexed initiator);
+    event DealResolved(uint256 indexed dealId, uint256 buyerAmount, uint256 sellerAmount);
     event SBTContractUpdated(address indexed previousSBT, address indexed newSBT);
 
     // ── Errors ──────────────────────────────────────────────────────────────
@@ -64,6 +65,8 @@ contract GigEscrow is ReentrancyGuard, Ownable {
     error DeadlineNotReached(uint256 current, uint256 deadline);
     error TransferFailed();
     error DealFrozenInDispute();
+    error InvalidSplit();
+    error ZeroAddress();
 
     constructor(address _sbtContract, address initialOwner) Ownable(initialOwner) {
         if (_sbtContract != address(0)) {
@@ -73,6 +76,7 @@ contract GigEscrow is ReentrancyGuard, Ownable {
 
     /// @notice Update the ReputationSBT contract address.
     function setSBTContract(address _sbtContract) external onlyOwner {
+        if (_sbtContract == address(0)) revert ZeroAddress();
         address old = address(sbtContract);
         sbtContract = IReputationSBT(_sbtContract);
         emit SBTContractUpdated(old, _sbtContract);
@@ -212,6 +216,36 @@ contract GigEscrow is ReentrancyGuard, Ownable {
 
         deal.state = DealState.Disputed;
         emit DealDisputed(dealId, msg.sender);
+    }
+
+    /// @notice Dispute resolution by contract owner/arbiter.
+    /// @dev Splits funds between buyer and seller according to ruling.
+    function resolveDispute(
+        uint256 dealId,
+        uint256 buyerAmount,
+        uint256 sellerAmount
+    ) external onlyOwner nonReentrant {
+        Deal storage deal = deals[dealId];
+        if (deal.dealId == 0) revert DealNotFound();
+        if (deal.state != DealState.Disputed) revert InvalidState(deal.state, DealState.Disputed);
+        if (buyerAmount + sellerAmount != deal.amount) revert InvalidSplit();
+
+        // Checks-effects: transition state
+        deal.state = (sellerAmount > 0) ? DealState.Released : DealState.Refunded;
+        address payable buyer = deal.buyer;
+        address payable seller = deal.seller;
+
+        emit DealResolved(dealId, buyerAmount, sellerAmount);
+
+        // Interactions
+        if (buyerAmount > 0) {
+            (bool successBuyer, ) = buyer.call{value: buyerAmount}("");
+            if (!successBuyer) revert TransferFailed();
+        }
+        if (sellerAmount > 0) {
+            (bool successSeller, ) = seller.call{value: sellerAmount}("");
+            if (!successSeller) revert TransferFailed();
+        }
     }
 
     /// @notice Helper to inspect deal details.

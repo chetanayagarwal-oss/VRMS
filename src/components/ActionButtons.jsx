@@ -8,7 +8,7 @@ function RoundButton({ onClick, disabled, label, className, children }) {
       onClick={onClick}
       disabled={disabled}
       aria-label={label}
-      className={`flex h-16 w-16 items-center justify-center rounded-full border text-2xl shadow-lg transition-colors disabled:opacity-30 ${className}`}
+      className={`flex h-16 w-16 min-h-[44px] min-w-[44px] items-center justify-center rounded-full border text-2xl shadow-lg transition-colors disabled:opacity-30 ${className}`}
     >
       {children}
     </motion.button>

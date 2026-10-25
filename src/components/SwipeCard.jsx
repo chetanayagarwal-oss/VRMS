@@ -55,7 +55,7 @@ export default function SwipeCard({ gig, index, direction, onSwipe, onSkillClick
   return (
     <motion.div
       className="swipe-surface absolute inset-0"
-      style={{ x: isTop ? x : 0, rotate: isTop ? rotate : 0, zIndex: 10 - index }}
+      style={{ x: isTop ? x : 0, rotate: isTop ? rotate : 0, zIndex: 10 - index, touchAction: "pan-y" }}
       custom={direction}
       variants={exitVariants}
       exit="exit"

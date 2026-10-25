@@ -4,35 +4,96 @@ import { motion, AnimatePresence } from "framer-motion";
 export default function SettingsModal({ isOpen, onClose, budget, onSave }) {
   const [min, setMin] = useState(budget.min);
   const [max, setMax] = useState(budget.max);
-  const [error, setError] = useState("");
+  const [minError, setMinError] = useState("");
+  const [maxError, setMaxError] = useState("");
+  const [generalError, setGeneralError] = useState("");
 
   useEffect(() => {
     if (isOpen) {
       setMin(budget.min);
       setMax(budget.max);
-      setError("");
+      setMinError("");
+      setMaxError("");
+      setGeneralError("");
     }
   }, [isOpen, budget]);
+
+  const validate = (minVal, maxVal) => {
+    let hasErr = false;
+    setMinError("");
+    setMaxError("");
+    setGeneralError("");
+
+    if (isNaN(minVal) || minVal === "") {
+      setMinError("Please enter a valid numeric value.");
+      hasErr = true;
+    } else if (minVal <= 0) {
+      setMinError("Minimum budget must be greater than 0 USDC.");
+      hasErr = true;
+    }
+
+    if (isNaN(maxVal) || maxVal === "") {
+      setMaxError("Please enter a valid numeric value.");
+      hasErr = true;
+    } else if (maxVal <= 0) {
+      setMaxError("Maximum target must be greater than 0 USDC.");
+      hasErr = true;
+    } else if (maxVal > 1_000_000) {
+      setMaxError("Maximum budget cannot exceed 1,000,000 USDC.");
+      hasErr = true;
+    }
+
+    if (!hasErr && minVal > maxVal) {
+      setGeneralError("Minimum floor cannot exceed maximum target budget.");
+      hasErr = true;
+    }
+
+    return !hasErr;
+  };
+
+  const handleMinChange = (val) => {
+    setMin(val);
+    const nMin = Number(val);
+    const nMax = Number(max);
+    if (!isNaN(nMin) && !isNaN(nMax) && nMin > nMax && nMin > 0 && nMax > 0) {
+      setGeneralError("Minimum floor cannot exceed maximum target budget.");
+    } else {
+      setGeneralError("");
+    }
+    if (nMin <= 0 && val !== "") {
+      setMinError("Minimum budget must be greater than 0 USDC.");
+    } else {
+      setMinError("");
+    }
+  };
+
+  const handleMaxChange = (val) => {
+    setMax(val);
+    const nMin = Number(min);
+    const nMax = Number(val);
+    if (!isNaN(nMin) && !isNaN(nMax) && nMin > nMax && nMin > 0 && nMax > 0) {
+      setGeneralError("Minimum floor cannot exceed maximum target budget.");
+    } else {
+      setGeneralError("");
+    }
+    if (nMax <= 0 && val !== "") {
+      setMaxError("Maximum target must be greater than 0 USDC.");
+    } else if (nMax > 1_000_000) {
+      setMaxError("Maximum budget cannot exceed 1,000,000 USDC.");
+    } else {
+      setMaxError("");
+    }
+  };
 
   const handleSave = (e) => {
     e.preventDefault();
     const minVal = Number(min);
     const maxVal = Number(max);
 
-    if (isNaN(minVal) || isNaN(maxVal)) {
-      setError("Please enter valid numeric values.");
-      return;
-    }
-    if (minVal < 0) {
-      setError("Minimum budget cannot be negative.");
-      return;
-    }
-    if (minVal > maxVal) {
-      setError("Minimum budget cannot exceed maximum target budget.");
+    if (!validate(minVal, maxVal)) {
       return;
     }
 
-    setError("");
     onSave({ min: minVal, max: maxVal });
     onClose();
   };
@@ -40,7 +101,9 @@ export default function SettingsModal({ isOpen, onClose, budget, onSave }) {
   const handleReset = () => {
     setMin(1000);
     setMax(3000);
-    setError("");
+    setMinError("");
+    setMaxError("");
+    setGeneralError("");
   };
 
   return (
@@ -93,7 +156,7 @@ export default function SettingsModal({ isOpen, onClose, budget, onSave }) {
 
               <button
                 onClick={onClose}
-                className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-zinc-400 transition hover:bg-white/10 hover:text-white"
+                className="flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-full border border-white/10 text-zinc-400 transition hover:bg-white/10 hover:text-white"
                 aria-label="Close settings"
               >
                 ✕
@@ -114,13 +177,17 @@ export default function SettingsModal({ isOpen, onClose, budget, onSave }) {
                 <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-400">
                   Hidden Minimum Floor (USDC)
                 </label>
-                <div className="mt-1.5 relative rounded-xl border border-white/10 bg-ink-950 focus-within:border-accent">
+                <div
+                  className={`mt-1.5 relative rounded-xl border bg-ink-950 focus-within:border-accent ${
+                    minError ? "border-rose-500/50" : "border-white/10"
+                  }`}
+                >
                   <input
                     type="number"
                     step="50"
-                    min="0"
+                    min="1"
                     value={min}
-                    onChange={(e) => setMin(e.target.value)}
+                    onChange={(e) => handleMinChange(e.target.value)}
                     className="w-full bg-transparent px-4 py-2.5 font-mono text-sm text-white placeholder-zinc-600 focus:outline-none"
                     placeholder="1000"
                   />
@@ -128,22 +195,30 @@ export default function SettingsModal({ isOpen, onClose, budget, onSave }) {
                     USDC
                   </span>
                 </div>
-                <p className="mt-1 text-[11px] text-zinc-500">
-                  Your AI will strictly decline any deal below this amount.
-                </p>
+                {minError ? (
+                  <p className="mt-1 text-[11px] font-medium text-rose-400">{minError}</p>
+                ) : (
+                  <p className="mt-1 text-[11px] text-zinc-500">
+                    Your AI will strictly decline any deal below this amount.
+                  </p>
+                )}
               </div>
 
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-400">
                   Hidden Maximum Target (USDC)
                 </label>
-                <div className="mt-1.5 relative rounded-xl border border-white/10 bg-ink-950 focus-within:border-accent">
+                <div
+                  className={`mt-1.5 relative rounded-xl border bg-ink-950 focus-within:border-accent ${
+                    maxError ? "border-rose-500/50" : "border-white/10"
+                  }`}
+                >
                   <input
                     type="number"
                     step="50"
-                    min="0"
+                    min="1"
                     value={max}
-                    onChange={(e) => setMax(e.target.value)}
+                    onChange={(e) => handleMaxChange(e.target.value)}
                     className="w-full bg-transparent px-4 py-2.5 font-mono text-sm text-white placeholder-zinc-600 focus:outline-none"
                     placeholder="3000"
                   />
@@ -151,9 +226,13 @@ export default function SettingsModal({ isOpen, onClose, budget, onSave }) {
                     USDC
                   </span>
                 </div>
-                <p className="mt-1 text-[11px] text-zinc-500">
-                  Your AI will open negotiations anchoring near this upper target.
-                </p>
+                {maxError ? (
+                  <p className="mt-1 text-[11px] font-medium text-rose-400">{maxError}</p>
+                ) : (
+                  <p className="mt-1 text-[11px] text-zinc-500">
+                    Your AI will open negotiations anchoring near this upper target.
+                  </p>
+                )}
               </div>
 
               {/* Quick Presets */}
@@ -165,8 +244,11 @@ export default function SettingsModal({ isOpen, onClose, budget, onSave }) {
                     onClick={() => {
                       setMin(800);
                       setMax(2000);
+                      setMinError("");
+                      setMaxError("");
+                      setGeneralError("");
                     }}
-                    className="rounded-lg border border-white/5 bg-ink-800 px-2.5 py-1 text-xs text-zinc-300 transition hover:border-accent/40 hover:bg-ink-700"
+                    className="min-h-[44px] rounded-lg border border-white/5 bg-ink-800 px-3 py-2 text-xs text-zinc-300 transition hover:border-accent/40 hover:bg-ink-700"
                   >
                     $800 - $2,000
                   </button>
@@ -175,8 +257,11 @@ export default function SettingsModal({ isOpen, onClose, budget, onSave }) {
                     onClick={() => {
                       setMin(1000);
                       setMax(3000);
+                      setMinError("");
+                      setMaxError("");
+                      setGeneralError("");
                     }}
-                    className="rounded-lg border border-white/5 bg-ink-800 px-2.5 py-1 text-xs text-zinc-300 transition hover:border-accent/40 hover:bg-ink-700"
+                    className="min-h-[44px] rounded-lg border border-white/5 bg-ink-800 px-3 py-2 text-xs text-zinc-300 transition hover:border-accent/40 hover:bg-ink-700"
                   >
                     $1,000 - $3,000 (Default)
                   </button>
@@ -185,17 +270,20 @@ export default function SettingsModal({ isOpen, onClose, budget, onSave }) {
                     onClick={() => {
                       setMin(2000);
                       setMax(4500);
+                      setMinError("");
+                      setMaxError("");
+                      setGeneralError("");
                     }}
-                    className="rounded-lg border border-white/5 bg-ink-800 px-2.5 py-1 text-xs text-zinc-300 transition hover:border-accent/40 hover:bg-ink-700"
+                    className="min-h-[44px] rounded-lg border border-white/5 bg-ink-800 px-3 py-2 text-xs text-zinc-300 transition hover:border-accent/40 hover:bg-ink-700"
                   >
                     $2,000 - $4,500
                   </button>
                 </div>
               </div>
 
-              {error && (
-                <div className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-400">
-                  ⚠️ {error}
+              {generalError && (
+                <div className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-3.5 py-2.5 text-xs font-medium text-rose-400">
+                  ⚠️ {generalError}
                 </div>
               )}
 
@@ -204,7 +292,7 @@ export default function SettingsModal({ isOpen, onClose, budget, onSave }) {
                 <button
                   type="button"
                   onClick={handleReset}
-                  className="text-xs text-zinc-400 underline-offset-4 hover:text-white hover:underline"
+                  className="min-h-[44px] text-xs text-zinc-400 underline-offset-4 hover:text-white hover:underline"
                 >
                   Reset defaults
                 </button>
@@ -213,13 +301,13 @@ export default function SettingsModal({ isOpen, onClose, budget, onSave }) {
                   <button
                     type="button"
                     onClick={onClose}
-                    className="rounded-full border border-white/10 px-4 py-2 text-xs font-semibold text-zinc-300 transition hover:bg-white/5"
+                    className="min-h-[44px] rounded-full border border-white/10 px-4 py-2 text-xs font-semibold text-zinc-300 transition hover:bg-white/5"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="rounded-full bg-accent px-5 py-2 text-xs font-semibold text-white transition hover:bg-accent-soft shadow-lg shadow-accent/20"
+                    className="min-h-[44px] rounded-full bg-accent px-5 py-2 text-xs font-semibold text-white shadow-lg shadow-accent/20 transition hover:bg-accent-soft"
                   >
                     Save Changes
                   </button>

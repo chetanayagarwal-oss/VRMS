@@ -2,12 +2,14 @@ import { useState, useCallback, useReducer, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Header from "./components/Header.jsx";
 import CardStack from "./components/CardStack.jsx";
+import CardSkeleton from "./components/CardSkeleton.jsx";
 import ActionButtons from "./components/ActionButtons.jsx";
 import SettingsModal from "./components/SettingsModal.jsx";
 import NegotiationModal from "./components/NegotiationModal.jsx";
 import ProfileView from "./components/ProfileView.jsx";
 import SkillFilterBar from "./components/SkillFilterBar.jsx";
 import { MOCK_GIGS, ALL_SKILLS } from "./data/gigs.js";
+import { track } from "./utils/analytics.js";
 import {
   dealReducer,
   initialDealState,
@@ -15,9 +17,44 @@ import {
   DEAL_STATES,
 } from "./state/dealMachine.js";
 
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
 export default function App() {
-  // ── Core gig state ──────────────────────────────────────────────────────────
-  const [swipedIds, setSwipedIds] = useState(new Set());   // tracks all swiped gig IDs
+  // ── Gigs & Feed loading state ───────────────────────────────────────────────
+  const [gigs, setGigs] = useState(MOCK_GIGS);
+  const [isLoading, setIsLoading] = useState(true);
+  const [fetchError, setFetchError] = useState(null);
+
+  const fetchGigs = useCallback(async () => {
+    setIsLoading(true);
+    setFetchError(null);
+    try {
+      const res = await fetch(`${API_URL}/gigs`);
+      if (!res.ok) {
+        throw new Error(`HTTP error ${res.status}`);
+      }
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) {
+        setGigs(data);
+      } else {
+        setGigs(MOCK_GIGS);
+      }
+    } catch (err) {
+      console.warn("Could not fetch live gigs from backend:", err);
+      setFetchError(
+        "Unable to reach the SwipeGig backend. Ensure the FastAPI server is running on port 8000 or use offline demo mode."
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchGigs();
+  }, [fetchGigs]);
+
+  // ── Core swiping state ──────────────────────────────────────────────────────
+  const [swipedIds, setSwipedIds] = useState(new Set());
   const [matched, setMatched] = useState([]);
   const [skipped, setSkipped] = useState([]);
   const [direction, setDirection] = useState(1);
@@ -27,25 +64,25 @@ export default function App() {
   const [selectedSkills, setSelectedSkills] = useState([]);
   const [selectedCategory, setSelectedCategory] = useState(null);
 
-  // Remaining unswipped gigs, filtered by active skill/category selections
+  // Remaining unswiped gigs, filtered by active skill/category selections
   const filteredGigs = useMemo(() => {
-    return MOCK_GIGS.filter((g) => {
+    return gigs.filter((g) => {
       if (swipedIds.has(g.id)) return false;
       if (selectedCategory && g.category !== selectedCategory) return false;
       if (selectedSkills.length > 0 && !selectedSkills.every((s) => g.skills.includes(s)))
         return false;
       return true;
     });
-  }, [swipedIds, selectedSkills, selectedCategory]);
+  }, [gigs, swipedIds, selectedSkills, selectedCategory]);
 
-  // Skills to show in the filter bar (only skills that exist in currently unswipped, filtered gigs)
+  // Skills to show in the filter bar
   const visibleSkills = useMemo(() => {
     const base = selectedCategory
-      ? MOCK_GIGS.filter((g) => g.category === selectedCategory)
-      : MOCK_GIGS;
+      ? gigs.filter((g) => g.category === selectedCategory)
+      : gigs;
     const skillSet = new Set(base.flatMap((g) => g.skills));
     return ALL_SKILLS.filter((s) => skillSet.has(s));
-  }, [selectedCategory]);
+  }, [gigs, selectedCategory]);
 
   // ── Budget Settings ──────────────────────────────────────────────────────────
   const [userBudget, setUserBudget] = useState({ min: 1000, max: 3000 });
@@ -68,7 +105,7 @@ export default function App() {
     }
   }, [dealState.status, dealState.completedDeal]);
 
-  // ── Swipe Handler ────────────────────────────────────────────────────────────
+  // ── Swipe Handler with Analytics ─────────────────────────────────────────────
   const handleSwipe = useCallback(
     (dir) => {
       const top = filteredGigs[0];
@@ -76,8 +113,23 @@ export default function App() {
       setDirection(dir);
       setSwipedIds((prev) => new Set([...prev, top.id]));
 
+      // Analytics event: gig_swiped
+      track("gig_swiped", {
+        gig_id: top.id,
+        direction: dir === 1 ? "right" : "left",
+        title: top.title,
+        budget: top.budget,
+      });
+
       if (dir === 1) {
         setMatched((m) => [...m, top]);
+        // Analytics event: deal_started
+        track("deal_started", {
+          gig_id: top.id,
+          user_min_budget: userBudget.min,
+          user_max_budget: userBudget.max,
+        });
+
         dispatch({
           type: DEAL_ACTIONS.START_NEGOTIATION,
           payload: { gig: top, userBudget },
@@ -98,7 +150,6 @@ export default function App() {
 
   const handleToggleCategory = useCallback((cat) => {
     setSelectedCategory((prev) => (prev === cat ? null : cat));
-    // When switching category clear skills that don't exist in new category
     setSelectedSkills([]);
   }, []);
 
@@ -125,10 +176,10 @@ export default function App() {
   const empty = filteredGigs.length === 0;
   const isNegotiationOpen = dealState.status !== DEAL_STATES.IDLE;
   const hasActiveFilter = selectedSkills.length > 0 || !!selectedCategory;
-  const totalUnswipped = MOCK_GIGS.filter((g) => !swipedIds.has(g.id)).length;
+  const totalUnswiped = gigs.filter((g) => !swipedIds.has(g.id)).length;
 
   return (
-    <div className="flex min-h-full flex-col overflow-x-hidden px-4 pb-10">
+    <div className="flex min-h-full flex-col overflow-x-hidden px-3 sm:px-4 pb-10">
       {/* ── Global Header ─────────────────────────────────────────────────────── */}
       <Header
         matched={matched.length}
@@ -152,7 +203,7 @@ export default function App() {
               onBackToFeed={() => setCurrentView("feed")}
             />
           ) : (
-            <div key="feed" className="flex flex-1 flex-col items-center">
+            <div key="feed" className="flex flex-1 flex-col items-center w-full max-w-[400px] mx-auto">
               {/* ── Skill & Category Filter Bar ─────────────────────────────── */}
               <SkillFilterBar
                 skills={visibleSkills}
@@ -161,16 +212,49 @@ export default function App() {
                 onToggleSkill={handleToggleSkill}
                 onToggleCategory={handleToggleCategory}
                 onClearAll={handleClearAll}
-                totalGigs={totalUnswipped}
+                totalGigs={totalUnswiped}
                 filteredCount={filteredGigs.length}
               />
 
-              {/* ── Card Feed or Empty State ─────────────────────────────────── */}
-              {empty ? (
+              {/* ── Feed Content: Loading Skeleton, Error State, or Card Feed ── */}
+              {isLoading ? (
+                <CardSkeleton />
+              ) : fetchError ? (
                 <motion.div
                   initial={{ opacity: 0, y: 12 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="mx-auto mt-4 flex h-[520px] w-full max-w-[400px] flex-col items-center justify-center rounded-3xl border border-dashed border-white/10 bg-ink-900/50 p-8 text-center"
+                  className="mx-auto mt-4 flex h-[520px] w-full flex-col items-center justify-center rounded-3xl border border-dashed border-amber-500/30 bg-ink-900/60 p-8 text-center backdrop-blur-xl"
+                >
+                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-500/10 text-3xl text-amber-400">
+                    🔌
+                  </div>
+                  <h2 className="mt-4 text-lg font-bold text-white">Backend Currently Unreachable</h2>
+                  <p className="mt-2 text-xs text-zinc-400 leading-relaxed">
+                    {fetchError}
+                  </p>
+                  <div className="mt-6 flex flex-col gap-2.5 w-full">
+                    <button
+                      onClick={fetchGigs}
+                      className="min-h-[44px] rounded-full bg-accent px-6 py-2.5 text-xs font-semibold text-white shadow-lg shadow-accent/20 transition hover:bg-accent-soft"
+                    >
+                      🔄 Retry Connection
+                    </button>
+                    <button
+                      onClick={() => {
+                        setGigs(MOCK_GIGS);
+                        setFetchError(null);
+                      }}
+                      className="min-h-[44px] rounded-full border border-white/10 bg-ink-800 px-6 py-2.5 text-xs font-semibold text-zinc-300 transition hover:bg-ink-700 hover:text-white"
+                    >
+                      ⚡ Load Demo Gigs Offline
+                    </button>
+                  </div>
+                </motion.div>
+              ) : empty ? (
+                <motion.div
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mx-auto mt-4 flex h-[520px] w-full flex-col items-center justify-center rounded-3xl border border-dashed border-white/10 bg-ink-900/50 p-8 text-center"
                 >
                   {hasActiveFilter ? (
                     <>
@@ -181,7 +265,7 @@ export default function App() {
                       </p>
                       <button
                         onClick={handleClearAll}
-                        className="mt-5 rounded-full border border-white/10 bg-ink-800 px-5 py-2.5 text-xs font-semibold text-zinc-300 transition hover:bg-ink-700 hover:text-white"
+                        className="mt-5 min-h-[44px] rounded-full border border-white/10 bg-ink-800 px-5 py-2.5 text-xs font-semibold text-zinc-300 transition hover:bg-ink-700 hover:text-white"
                       >
                         Clear All Filters
                       </button>
@@ -197,14 +281,14 @@ export default function App() {
                       <div className="mt-6 flex flex-col gap-2.5 sm:flex-row">
                         <button
                           onClick={reset}
-                          className="rounded-full bg-accent px-6 py-2.5 text-xs font-semibold text-white shadow-lg shadow-accent/20 transition hover:bg-accent-soft"
+                          className="min-h-[44px] rounded-full bg-accent px-6 py-2.5 text-xs font-semibold text-white shadow-lg shadow-accent/20 transition hover:bg-accent-soft"
                         >
                           Reload Demo Gigs
                         </button>
                         {completedDeals.length > 0 && (
                           <button
                             onClick={() => setCurrentView("profile")}
-                            className="rounded-full border border-white/10 bg-ink-800 px-6 py-2.5 text-xs font-semibold text-zinc-300 transition hover:bg-ink-700 hover:text-white"
+                            className="min-h-[44px] rounded-full border border-white/10 bg-ink-800 px-6 py-2.5 text-xs font-semibold text-zinc-300 transition hover:bg-ink-700 hover:text-white"
                           >
                             View Profile & SBTs
                           </button>
