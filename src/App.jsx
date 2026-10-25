@@ -8,6 +8,7 @@ import SettingsModal from "./components/SettingsModal.jsx";
 import NegotiationModal from "./components/NegotiationModal.jsx";
 import ProfileView from "./components/ProfileView.jsx";
 import SkillFilterBar from "./components/SkillFilterBar.jsx";
+import LandingPage from "./components/LandingPage.jsx";
 import { MOCK_GIGS, ALL_SKILLS } from "./data/gigs.js";
 import { track } from "./utils/analytics.js";
 import {
@@ -20,6 +21,24 @@ import {
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 export default function App() {
+  // ── Auth State ───────────────────────────────────────────────────────────────
+  const [user, setUser] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("sg_user")); } catch { return null; }
+  });
+  const [role, setRole] = useState(() => localStorage.getItem("sg_role") || null);
+
+  const handleEnter = (u, r) => {
+    setUser(u);
+    setRole(r);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem("sg_user");
+    localStorage.removeItem("sg_role");
+    setUser(null);
+    setRole(null);
+  };
+
   // ── Gigs & Feed loading state ───────────────────────────────────────────────
   const [gigs, setGigs] = useState(MOCK_GIGS);
   const [isLoading, setIsLoading] = useState(true);
@@ -179,6 +198,12 @@ export default function App() {
   const totalUnswiped = gigs.filter((g) => !swipedIds.has(g.id)).length;
 
   return (
+    <>
+      {/* ── Landing / Auth Gate ──────────────────────────────────────────────── */}
+      <AnimatePresence>
+        {!user && <LandingPage key="landing" onEnter={handleEnter} />}
+      </AnimatePresence>
+
     <div className="flex min-h-full flex-col overflow-x-hidden px-3 sm:px-4 pb-10">
       {/* ── Global Header ─────────────────────────────────────────────────────── */}
       <Header
@@ -327,6 +352,9 @@ export default function App() {
         onClose={() => setIsSettingsOpen(false)}
         budget={userBudget}
         onSave={(newBudget) => setUserBudget(newBudget)}
+        onLogout={handleLogout}
+        user={user}
+        role={role}
       />
 
       {/* ── Full-Screen Negotiation & Escrow Modal ────────────────────────────── */}
@@ -337,6 +365,7 @@ export default function App() {
         onClose={handleCloseNegotiation}
         onViewProfile={handleViewProfileFromModal}
       />
-    </div>
+      </div>
+    </>
   );
 }

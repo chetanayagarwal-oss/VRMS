@@ -1,7 +1,9 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import StarterManual from "./StarterManual.jsx";
 
-export default function SettingsModal({ isOpen, onClose, budget, onSave }) {
+export default function SettingsModal({ isOpen, onClose, budget, onSave, onLogout, user, role }) {
+  const [showManual, setShowManual] = useState(false);
   const [min, setMin] = useState(budget.min);
   const [max, setMax] = useState(budget.max);
   const [minError, setMinError] = useState("");
@@ -147,10 +149,10 @@ export default function SettingsModal({ isOpen, onClose, budget, onSave }) {
                       />
                     </svg>
                   </div>
-                  <h3 className="text-lg font-bold text-white">Agent Negotiation Settings</h3>
+                  <h3 className="text-lg font-bold text-white">Settings</h3>
                 </div>
                 <p className="mt-1 text-xs text-zinc-400">
-                  Hidden thresholds configured for your autonomous Seller AI agent.
+                  Agent budget · Starter Manual · Account
                 </p>
               </div>
 
@@ -163,8 +165,24 @@ export default function SettingsModal({ isOpen, onClose, budget, onSave }) {
               </button>
             </div>
 
+            {/* User / Role Badge */}
+            {user && (
+              <div className="mt-4 flex items-center gap-3 rounded-xl border border-white/10 bg-ink-950/60 p-3">
+                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-violet-500 to-cyan-500 text-sm font-bold text-white">
+                  {user.name ? user.name[0].toUpperCase() : "G"}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="truncate text-xs font-semibold text-white">{user.name || "Guest"}</div>
+                  <div className="text-[10px] text-zinc-500 capitalize">{role || "guest"} account</div>
+                </div>
+                <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize ${
+                  role === "client" ? "bg-violet-500/20 text-violet-300" : "bg-cyan-500/20 text-cyan-300"
+                }`}>{role || "guest"}</span>
+              </div>
+            )}
+
             {/* Confidentiality Pill */}
-            <div className="mt-4 flex items-center gap-2 rounded-xl border border-violet-500/20 bg-violet-500/10 p-3 text-xs text-violet-300">
+            <div className="mt-3 flex items-center gap-2 rounded-xl border border-violet-500/20 bg-violet-500/10 p-3 text-xs text-violet-300">
               <span className="text-base">🔒</span>
               <span>
                 <strong>Zero-Knowledge Budget:</strong> These numbers are never shown on your profile
@@ -314,6 +332,49 @@ export default function SettingsModal({ isOpen, onClose, budget, onSave }) {
                 </div>
               </div>
             </form>
+
+            {/* ── Starter Manual ─────────────────────────────────────────────── */}
+            <div className="mt-5">
+              <button
+                type="button"
+                onClick={() => setShowManual((v) => !v)}
+                className="flex w-full items-center justify-between rounded-xl border border-white/10 bg-ink-950/50 px-4 py-3 text-left transition hover:bg-ink-800/60"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-base">📖</span>
+                  <span className="text-xs font-semibold text-white">Starter Manual</span>
+                  <span className="rounded-full bg-accent/20 px-2 py-0.5 text-[10px] font-semibold text-accent-soft">How it works</span>
+                </div>
+                <span className={`text-zinc-500 text-xs transition-transform duration-200 ${showManual ? "rotate-180" : ""}`}>▼</span>
+              </button>
+              <AnimatePresence>
+                {showManual && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={{ duration: 0.25 }}
+                    className="overflow-hidden"
+                  >
+                    <StarterManual onClose={() => { setShowManual(false); onClose(); }} />
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* ── Logout ─────────────────────────────────────────────────────── */}
+            {onLogout && (
+              <div className="mt-4 border-t border-white/5 pt-4">
+                <button
+                  type="button"
+                  onClick={() => { onLogout(); onClose(); }}
+                  id="btn-logout"
+                  className="flex w-full items-center justify-center gap-2 rounded-full border border-rose-500/20 bg-rose-500/10 py-2.5 text-xs font-semibold text-rose-400 transition hover:bg-rose-500/20 hover:text-rose-300"
+                >
+                  🚪 Sign Out
+                </button>
+              </div>
+            )}
           </motion.div>
         </div>
       )}
