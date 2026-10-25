@@ -1,4 +1,5 @@
-import { motion, useMotionValue, useTransform } from "framer-motion";
+import { useState } from "react";
+import { motion, useMotionValue, useTransform, AnimatePresence } from "framer-motion";
 import SBTBadge from "./SBTBadge.jsx";
 
 const SWIPE_DISTANCE = 120; // px needed to commit a swipe
@@ -13,8 +14,21 @@ const exitVariants = {
   }),
 };
 
-export default function SwipeCard({ gig, index, direction, onSwipe }) {
+// Category colour mapping – full Tailwind strings only
+const CATEGORY_PILL = {
+  Development: "border-violet-500/40 bg-violet-500/15 text-violet-300",
+  Design:      "border-fuchsia-500/40 bg-fuchsia-500/15 text-fuchsia-300",
+  Security:    "border-emerald-500/40 bg-emerald-500/15 text-emerald-300",
+  Writing:     "border-amber-500/40 bg-amber-500/15 text-amber-300",
+  "AI / ML":   "border-rose-500/40 bg-rose-500/15 text-rose-300",
+  Data:        "border-lime-500/40 bg-lime-500/15 text-lime-300",
+  Mobile:      "border-indigo-500/40 bg-indigo-500/15 text-indigo-300",
+  DevOps:      "border-sky-500/40 bg-sky-500/15 text-sky-300",
+};
+
+export default function SwipeCard({ gig, index, direction, onSwipe, onSkillClick, activeSkills = [] }) {
   const isTop = index === 0;
+  const [skillToast, setSkillToast] = useState(null);
 
   const x = useMotionValue(0);
   const rotate = useTransform(x, [-250, 0, 250], [-14, 0, 14]);
@@ -26,6 +40,17 @@ export default function SwipeCard({ gig, index, direction, onSwipe }) {
     if (offset.x > SWIPE_DISTANCE || velocity.x > SWIPE_VELOCITY) onSwipe(1);
     else if (offset.x < -SWIPE_DISTANCE || velocity.x < -SWIPE_VELOCITY) onSwipe(-1);
   };
+
+  const handleSkillClick = (e, skill) => {
+    if (!isTop) return;
+    e.stopPropagation(); // don't trigger drag logic
+    onSkillClick?.(skill);
+    // Show a brief toast on the card
+    setSkillToast(skill);
+    setTimeout(() => setSkillToast(null), 1400);
+  };
+
+  const catStyle = CATEGORY_PILL[gig.category] || "border-white/10 bg-white/5 text-zinc-300";
 
   return (
     <motion.div
@@ -73,68 +98,115 @@ export default function SwipeCard({ gig, index, direction, onSwipe }) {
           </>
         )}
 
+        {/* Skill-tap toast */}
+        <AnimatePresence>
+          {skillToast && (
+            <motion.div
+              initial={{ opacity: 0, y: -8, scale: 0.92 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -8, scale: 0.92 }}
+              className="pointer-events-none absolute left-1/2 top-5 z-30 -translate-x-1/2 rounded-full border border-accent/30 bg-ink-950/90 px-3 py-1 text-xs font-semibold text-accent-soft backdrop-blur-md"
+            >
+              🔍 Filtering by "{skillToast}"
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         <div className="relative flex h-full flex-col p-6 sm:p-7">
-          {/* Top row */}
-          <div className="mt-10 flex items-center justify-between">
-            <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-zinc-300">
+          {/* Top row – category + timeline */}
+          <div className="mt-10 flex items-center justify-between gap-2">
+            <span
+              className={`rounded-full border px-3 py-1 text-xs font-semibold ${catStyle}`}
+            >
               {gig.category}
             </span>
-            <span className="text-xs font-medium text-zinc-400">
+            <span className="flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-zinc-400">
               ⏱ {gig.timeline}
             </span>
           </div>
 
           {/* Title + description */}
-          <div className="mt-6">
+          <div className="mt-5">
             <h2 className="text-2xl font-bold leading-tight tracking-tight text-white sm:text-[26px]">
               {gig.title}
             </h2>
             <p className="mt-3 text-sm leading-relaxed text-zinc-400">{gig.description}</p>
           </div>
 
-          {/* Skills */}
+          {/* Interactive Skill Pills */}
           <div className="mt-5 flex flex-wrap gap-2">
-            {gig.skills.map((skill) => (
-              <span
-                key={skill}
-                className="rounded-md bg-ink-600/70 px-2.5 py-1 text-xs font-medium text-zinc-300"
-              >
-                {skill}
-              </span>
-            ))}
+            {gig.skills.map((skill) => {
+              const isActive = activeSkills.includes(skill);
+              return (
+                <motion.button
+                  key={skill}
+                  onClick={(e) => handleSkillClick(e, skill)}
+                  whileHover={isTop ? { scale: 1.08 } : {}}
+                  whileTap={isTop ? { scale: 0.92 } : {}}
+                  className={`rounded-lg border px-2.5 py-1 text-xs font-semibold transition-all ${
+                    isActive
+                      ? "border-accent bg-accent text-white shadow-md shadow-accent/30"
+                      : isTop
+                      ? "border-white/15 bg-ink-600/70 text-zinc-300 hover:border-accent/50 hover:bg-ink-600 hover:text-white"
+                      : "border-white/10 bg-ink-600/70 text-zinc-400"
+                  } ${isTop ? "cursor-pointer" : "cursor-default"}`}
+                  title={isTop ? `Filter by ${skill}` : skill}
+                >
+                  {isActive && <span className="mr-1 text-[10px] opacity-80">✓</span>}
+                  {skill}
+                </motion.button>
+              );
+            })}
           </div>
 
           <div className="flex-1" />
 
-          {/* Budget */}
+          {/* Budget Box */}
           <div className="rounded-2xl border border-white/10 bg-ink-900/70 p-4 backdrop-blur">
-            <div className="text-[11px] font-medium uppercase tracking-widest text-zinc-500">
-              Budget
-            </div>
-            <div className="mt-1 flex items-baseline gap-2">
-              <span className="font-mono text-3xl font-semibold text-white">
-                {gig.budget.toLocaleString()}
-              </span>
-              <span className="text-sm font-medium text-zinc-400">{gig.currency}</span>
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-[11px] font-medium uppercase tracking-widest text-zinc-500">
+                  Budget
+                </div>
+                <div className="mt-1 flex items-baseline gap-2">
+                  <span className="font-mono text-3xl font-semibold text-white">
+                    {gig.budget.toLocaleString()}
+                  </span>
+                  <span className="text-sm font-medium text-zinc-400">{gig.currency}</span>
+                </div>
+              </div>
+              {/* Tap-to-negotiate hint on top card */}
+              {isTop && (
+                <div className="text-right">
+                  <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1.5 text-[10px] font-semibold text-emerald-400">
+                    Swipe right<br />to negotiate
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
-          {/* Buyer */}
+          {/* Buyer Row */}
           <div className="mt-4 flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-accent/20 text-sm font-bold text-accent-soft">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent/20 text-sm font-bold text-accent-soft">
               {gig.buyer.name[0]}
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5 text-sm font-semibold text-zinc-100">
                 <span className="truncate">{gig.buyer.name}</span>
                 {gig.buyer.verified && (
-                  <span title="Verified" className="text-sky-400">
+                  <span
+                    title="Verified buyer"
+                    className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-sky-400/20 text-[10px] text-sky-400"
+                  >
                     ✓
                   </span>
                 )}
               </div>
-              <div className="text-xs text-zinc-500">
-                ★ {gig.buyer.rating.toFixed(1)} · {gig.buyer.jobs} jobs
+              <div className="flex items-center gap-1.5 text-xs text-zinc-500">
+                <span>★ {gig.buyer.rating.toFixed(1)}</span>
+                <span>·</span>
+                <span>{gig.buyer.jobs} jobs</span>
               </div>
             </div>
             {gig.buyer.sbt && (

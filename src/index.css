@@ -23,3 +23,13 @@ body {
   user-select: none;
   -webkit-user-select: none;
 }
+
+/* Hide scrollbar in filter pill rows (all browsers) */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+

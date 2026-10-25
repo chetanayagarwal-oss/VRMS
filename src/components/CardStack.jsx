@@ -3,7 +3,7 @@ import SwipeCard from "./SwipeCard.jsx";
 
 const VISIBLE = 3;
 
-export default function CardStack({ gigs, direction, onSwipe }) {
+export default function CardStack({ gigs, direction, onSwipe, onSkillClick, activeSkills }) {
   const visible = gigs.slice(0, VISIBLE);
 
   return (
@@ -20,6 +20,8 @@ export default function CardStack({ gigs, direction, onSwipe }) {
               index={i}
               direction={direction}
               onSwipe={onSwipe}
+              onSkillClick={onSkillClick}
+              activeSkills={activeSkills}
             />
           ))}
       </AnimatePresence>
