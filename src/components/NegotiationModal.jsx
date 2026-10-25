@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import SBTBadge from "./SBTBadge.jsx";
 import {
@@ -7,6 +7,8 @@ import {
   DEAL_ACTIONS,
   generateNegotiationPlan,
 } from "../state/dealMachine.js";
+
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 function CheckIcon({ className = "h-5 w-5" }) {
   return (
@@ -37,57 +39,139 @@ export default function NegotiationModal({
   onViewProfile,
 }) {
   const [activeTab, setActiveTab] = useState("negotiation"); // "negotiation" | "escrow"
-  const [plan, setPlan] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [backendLoading, setBackendLoading] = useState(false);
+  const [backendError, setBackendError] = useState(null);
+  const [currentNegotiationId, setCurrentNegotiationId] = useState(null);
+  const [plan, setPlan] = useState(null); // Local fallback plan if backend offline
+
   const chatBottomRef = useRef(null);
+  const eventSourceRef = useRef(null);
+  const abortControllerRef = useRef(null);
 
-  // Initialize negotiation plan and start auto-dialogue when opened
-  useEffect(() => {
-    if (!isOpen || !dealState.gig) return;
+  // Fallback simulator if backend is offline
+  const startLocalSimulation = useCallback(() => {
+    if (!dealState.gig) return;
+    setBackendLoading(false);
+    setBackendError(null);
 
-    if (dealState.status === DEAL_STATES.NEGOTIATING && dealState.messages.length === 0) {
-      const generatedPlan = generateNegotiationPlan(dealState.gig, dealState.userBudget);
-      setPlan(generatedPlan);
-      setActiveTab("negotiation");
+    const generatedPlan = generateNegotiationPlan(dealState.gig, dealState.userBudget);
+    setPlan(generatedPlan);
+    setActiveTab("negotiation");
 
-      let currentStep = 0;
-      let isCancelled = false;
+    let currentStep = 0;
+    const cleanupTimers = [];
 
-      const runNextStep = () => {
-        if (isCancelled) return;
-        if (currentStep >= generatedPlan.steps.length) {
-          // Finished all steps
-          if (generatedPlan.success) {
-            dispatch({
-              type: DEAL_ACTIONS.RESOLVE_NEGOTIATION,
-              payload: { success: true, agreedPrice: generatedPlan.agreedPrice },
-            });
-            setActiveTab("escrow");
-          } else {
-            dispatch({
-              type: DEAL_ACTIONS.RESOLVE_NEGOTIATION,
-              payload: { success: false, reason: generatedPlan.reason },
-            });
-          }
-          return;
+    const runNextStep = () => {
+      if (currentStep >= generatedPlan.steps.length) {
+        if (generatedPlan.success) {
+          dispatch({
+            type: DEAL_ACTIONS.RESOLVE_NEGOTIATION,
+            payload: { success: true, agreedPrice: generatedPlan.agreedPrice },
+          });
+          setActiveTab("escrow");
+        } else {
+          dispatch({
+            type: DEAL_ACTIONS.RESOLVE_NEGOTIATION,
+            payload: { success: false, reason: generatedPlan.reason },
+          });
         }
+        return;
+      }
 
-        const step = generatedPlan.steps[currentStep];
+      const step = generatedPlan.steps[currentStep];
 
-        // 1. Show typing indicator
+      dispatch({
+        type: DEAL_ACTIONS.SET_TYPING,
+        payload: { isTyping: true, speaker: step.senderLabel },
+      });
+
+      const timer = setTimeout(() => {
         dispatch({
-          type: DEAL_ACTIONS.SET_TYPING,
-          payload: { isTyping: true, speaker: step.senderLabel },
+          type: DEAL_ACTIONS.ADD_MESSAGE,
+          payload: {
+            ...step,
+            id: `local-msg-${currentStep}-${Date.now()}`,
+            timestamp: new Date().toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+          },
         });
 
-        const typingDelay = 900;
-        const msgTimer = setTimeout(() => {
-          if (isCancelled) return;
+        currentStep++;
+        const nextTimer = setTimeout(runNextStep, 700);
+        cleanupTimers.push(nextTimer);
+      }, 800);
+
+      cleanupTimers.push(timer);
+    };
+
+    const initTimer = setTimeout(runNextStep, 300);
+    cleanupTimers.push(initTimer);
+  }, [dealState.gig, dealState.userBudget, dispatch]);
+
+  // Connect to FastAPI backend via SSE
+  const startBackendNegotiation = useCallback(async () => {
+    if (!dealState.gig) return;
+
+    // Close any previous event source
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    setBackendLoading(true);
+    setBackendError(null);
+    setActiveTab("negotiation");
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    try {
+      const response = await fetch(`${API_URL}/negotiations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          gig_id: dealState.gig.id,
+          user_id: "user-anon",
+          min_budget: dealState.userBudget.min,
+          max_budget: dealState.userBudget.max,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`FastAPI returned HTTP status ${response.status}`);
+      }
+
+      const data = await response.json();
+      const negId = data.negotiation_id;
+      setCurrentNegotiationId(negId);
+      setBackendLoading(false);
+
+      // Open SSE stream
+      const es = new EventSource(`${API_URL}/negotiations/${negId}/stream`);
+      eventSourceRef.current = es;
+
+      // Handle message events from agents
+      es.addEventListener("message", (e) => {
+        try {
+          const item = JSON.parse(e.data);
+          const isBuyer = item.role === "buyer";
+
           dispatch({
             type: DEAL_ACTIONS.ADD_MESSAGE,
             payload: {
-              ...step,
-              id: `msg-${currentStep}-${Date.now()}`,
+              id: `sse-msg-${item.round}-${item.role}-${Date.now()}`,
+              sender: isBuyer ? "Buyer AI" : "Seller AI",
+              senderLabel: isBuyer ? "Buyer AI" : "Seller AI",
+              avatar: isBuyer ? "🤖" : "⚡",
+              text: item.text,
+              offer: item.offer,
               timestamp: new Date().toLocaleTimeString([], {
                 hour: "2-digit",
                 minute: "2-digit",
@@ -95,29 +179,91 @@ export default function NegotiationModal({
             },
           });
 
-          currentStep++;
-          const nextTurnTimer = setTimeout(runNextStep, 700);
-          cleanupTimers.push(nextTurnTimer);
-        }, typingDelay);
+          // Show typing indicator for the other agent
+          dispatch({
+            type: DEAL_ACTIONS.SET_TYPING,
+            payload: {
+              isTyping: true,
+              speaker: isBuyer ? "Seller AI" : "Buyer AI",
+            },
+          });
+        } catch (err) {
+          console.error("Failed to parse SSE message payload:", err);
+        }
+      });
 
-        cleanupTimers.push(msgTimer);
+      // Handle completion event
+      es.addEventListener("done", (e) => {
+        try {
+          const res = JSON.parse(e.data);
+          es.close();
+          eventSourceRef.current = null;
+
+          dispatch({
+            type: DEAL_ACTIONS.SET_TYPING,
+            payload: { isTyping: false },
+          });
+
+          if (res.status === "agreed") {
+            dispatch({
+              type: DEAL_ACTIONS.RESOLVE_NEGOTIATION,
+              payload: { success: true, agreedPrice: res.price },
+            });
+            setActiveTab("escrow");
+          } else {
+            dispatch({
+              type: DEAL_ACTIONS.RESOLVE_NEGOTIATION,
+              payload: { success: false, reason: res.reason || "No budget overlap inside thresholds." },
+            });
+          }
+        } catch (err) {
+          console.error("Failed to parse SSE completion payload:", err);
+        }
+      });
+
+      es.onerror = (err) => {
+        // If stream error occurs before messages
+        console.warn("EventSource stream encountered a connection error:", err);
+        es.close();
+        eventSourceRef.current = null;
+        dispatch({
+          type: DEAL_ACTIONS.SET_TYPING,
+          payload: { isTyping: false },
+        });
       };
-
-      const cleanupTimers = [];
-      const initialTimer = setTimeout(runNextStep, 400);
-      cleanupTimers.push(initialTimer);
-
-      return () => {
-        isCancelled = true;
-        cleanupTimers.forEach(clearTimeout);
-      };
+    } catch (err) {
+      if (err.name === "AbortError") return;
+      console.warn("FastAPI backend unreachable:", err);
+      setBackendLoading(false);
+      setBackendError(
+        `Backend service at ${API_URL} is unreachable. Ensure the FastAPI server is running with 'uvicorn main:app --reload', or use the local simulator.`
+      );
     }
-  }, [isOpen, dealState.gig, dealState.status]);
+  }, [dealState.gig, dealState.userBudget, dispatch]);
+
+  // Trigger negotiation when modal opens in NEGOTIATING state with empty messages
+  useEffect(() => {
+    if (!isOpen || !dealState.gig) return;
+
+    if (dealState.status === DEAL_STATES.NEGOTIATING && dealState.messages.length === 0) {
+      startBackendNegotiation();
+    }
+
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, [isOpen, dealState.gig, dealState.status, startBackendNegotiation]);
 
   // Auto-scroll chat to bottom
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [dealState.messages, dealState.isTyping]);
+  }, [dealState.messages, dealState.isTyping, backendLoading]);
 
   // Handle escrow simulated lifecycle (Submitting -> Pending -> Confirmed)
   useEffect(() => {
@@ -147,7 +293,7 @@ export default function NegotiationModal({
         return () => clearTimeout(timer2);
       }
     }
-  }, [dealState.status, dealState.escrowStage]);
+  }, [dealState.status, dealState.escrowStage, dispatch]);
 
   // Handle auto-completion when both buyer and seller approve
   useEffect(() => {
@@ -157,7 +303,7 @@ export default function NegotiationModal({
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [dealState.buyerApproved, dealState.sellerApproved, dealState.status]);
+  }, [dealState.buyerApproved, dealState.sellerApproved, dealState.status, dispatch]);
 
   if (!isOpen || !dealState.gig) return null;
 
@@ -171,31 +317,59 @@ export default function NegotiationModal({
     }
   };
 
-  const handleFastForward = () => {
-    if (!plan) return;
-    // Add all remaining messages and resolve immediately
-    plan.steps.forEach((step, idx) => {
-      dispatch({
-        type: DEAL_ACTIONS.ADD_MESSAGE,
-        payload: {
-          ...step,
-          id: `ff-msg-${idx}-${Date.now()}`,
-          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        },
-      });
-    });
+  const handleFastForward = async () => {
+    if (currentNegotiationId) {
+      try {
+        const res = await fetch(`${API_URL}/negotiations/${currentNegotiationId}`);
+        if (res.ok) {
+          const result = await res.json();
+          if (eventSourceRef.current) {
+            eventSourceRef.current.close();
+            eventSourceRef.current = null;
+          }
+          if (result.status === "agreed") {
+            dispatch({
+              type: DEAL_ACTIONS.RESOLVE_NEGOTIATION,
+              payload: { success: true, agreedPrice: result.agreed_price },
+            });
+            setActiveTab("escrow");
+          } else {
+            dispatch({
+              type: DEAL_ACTIONS.RESOLVE_NEGOTIATION,
+              payload: { success: false, reason: result.reason },
+            });
+          }
+          return;
+        }
+      } catch (e) {
+        // fallback
+      }
+    }
 
-    if (plan.success) {
-      dispatch({
-        type: DEAL_ACTIONS.RESOLVE_NEGOTIATION,
-        payload: { success: true, agreedPrice: plan.agreedPrice },
+    if (plan) {
+      plan.steps.forEach((step, idx) => {
+        dispatch({
+          type: DEAL_ACTIONS.ADD_MESSAGE,
+          payload: {
+            ...step,
+            id: `ff-msg-${idx}-${Date.now()}`,
+            timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          },
+        });
       });
-      setActiveTab("escrow");
-    } else {
-      dispatch({
-        type: DEAL_ACTIONS.RESOLVE_NEGOTIATION,
-        payload: { success: false, reason: plan.reason },
-      });
+
+      if (plan.success) {
+        dispatch({
+          type: DEAL_ACTIONS.RESOLVE_NEGOTIATION,
+          payload: { success: true, agreedPrice: plan.agreedPrice },
+        });
+        setActiveTab("escrow");
+      } else {
+        dispatch({
+          type: DEAL_ACTIONS.RESOLVE_NEGOTIATION,
+          payload: { success: false, reason: plan.reason },
+        });
+      }
     }
   };
 
@@ -210,7 +384,7 @@ export default function NegotiationModal({
           <div>
             <div className="flex items-center gap-2">
               <span className="text-xs font-semibold uppercase tracking-wider text-accent-soft">
-                Autonomous AI Negotiation
+                Autonomous AI Negotiation (Part 3 Real SSE)
               </span>
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
             </div>
@@ -303,7 +477,10 @@ export default function NegotiationModal({
           <div className="flex flex-1 flex-col overflow-hidden rounded-2xl border border-white/10 bg-ink-900/40 p-4">
             {/* Chat header disclaimer */}
             <div className="mb-3 flex items-center justify-between border-b border-white/5 pb-2 text-[11px] text-zinc-500">
-              <span>🤖 Zero-Knowledge AI Negotiation · No human direct messaging</span>
+              <span className="flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                Backend SSE Stream · {API_URL}
+              </span>
               {dealState.status === DEAL_STATES.NEGOTIATING && (
                 <button
                   onClick={handleFastForward}
@@ -313,6 +490,43 @@ export default function NegotiationModal({
                 </button>
               )}
             </div>
+
+            {/* Backend Loading State */}
+            {backendLoading && (
+              <div className="flex flex-col items-center justify-center py-10 text-center">
+                <div className="relative flex h-12 w-12 items-center justify-center">
+                  <span className="absolute h-full w-full rounded-full bg-accent/20 animate-ping" />
+                  <span className="h-8 w-8 rounded-full bg-accent/40 animate-pulse flex items-center justify-center text-sm font-bold text-white">⚡</span>
+                </div>
+                <h4 className="mt-3 text-sm font-semibold text-white">Connecting to AI Agents...</h4>
+                <p className="mt-1 text-xs text-zinc-400">Buyer AI & Seller AI are loading private budget parameters</p>
+              </div>
+            )}
+
+            {/* Backend Error State Banner */}
+            {backendError && (
+              <div className="mb-4 rounded-2xl border border-amber-500/40 bg-amber-500/10 p-3.5 text-xs text-amber-200">
+                <div className="flex items-center gap-2 font-bold text-amber-300">
+                  <span>⚠️</span>
+                  <span>Backend Offline Notice</span>
+                </div>
+                <p className="mt-1 text-zinc-300 leading-relaxed">{backendError}</p>
+                <div className="mt-3 flex items-center gap-2">
+                  <button
+                    onClick={startBackendNegotiation}
+                    className="rounded-lg bg-amber-500/20 px-3 py-1.5 font-semibold text-amber-200 hover:bg-amber-500/30 transition border border-amber-500/30"
+                  >
+                    🔄 Retry FastAPI Connection
+                  </button>
+                  <button
+                    onClick={startLocalSimulation}
+                    className="rounded-lg border border-white/10 bg-ink-800 px-3 py-1.5 font-semibold text-white hover:bg-ink-700 transition"
+                  >
+                    ⚡ Run Offline Simulator
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Messages Feed */}
             <div className="flex-1 space-y-3.5 overflow-y-auto pr-1">
@@ -328,7 +542,7 @@ export default function NegotiationModal({
                   >
                     {isBuyer && (
                       <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-emerald-500/20 text-xs font-bold text-emerald-300">
-                        {msg.avatar || "B"}
+                        {msg.avatar || "🤖"}
                       </div>
                     )}
 
@@ -456,7 +670,7 @@ export default function NegotiationModal({
 
               <div className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-400">
                 <LockIcon className="h-3.5 w-3.5" />
-                Locked in Escrow
+                Locked in Escrow (GigEscrow.sol)
               </div>
 
               <div className="mt-3 flex items-baseline justify-center gap-2">
@@ -569,7 +783,7 @@ export default function NegotiationModal({
                         Milestone Completion Sign-Off
                       </h4>
                       <p className="mt-0.5 text-[11px] text-zinc-400">
-                        Both parties must click to approve release of escrow funds.
+                        Both parties must call approveCompletion(dealId) on GigEscrow.
                       </p>
                     </div>
                     <span className="rounded-full bg-white/5 px-2.5 py-0.5 text-[10px] text-zinc-400">
@@ -648,14 +862,13 @@ export default function NegotiationModal({
                   Funds Released & SBT Minted!
                 </h3>
                 <p className="mt-1 text-xs text-emerald-300">
-                  {dealState.agreedPrice?.toLocaleString()} {gig.currency} has been transferred to
-                  your smart wallet.
+                  {dealState.agreedPrice?.toLocaleString()} {gig.currency} has been released from GigEscrow.sol.
                 </p>
 
                 {/* Soulbound Token Preview with Shine Animation */}
                 <div className="mt-4 flex flex-col items-center justify-center rounded-2xl border border-white/10 bg-ink-900/80 p-4">
                   <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 mb-2">
-                    On-Chain Reputation Minted
+                    On-Chain Reputation Minted (ReputationSBT.sol)
                   </span>
                   <SBTBadge
                     tier={dealState.completedDeal?.sbtMinted?.tier || "Gold"}
@@ -664,7 +877,7 @@ export default function NegotiationModal({
                     size="lg"
                   />
                   <span className="mt-2 text-[11px] font-mono text-zinc-500">
-                    Token ID: {dealState.completedDeal?.sbtMinted?.tokenId} · Soulbound (Non-Transferable)
+                    Token ID: {dealState.completedDeal?.sbtMinted?.tokenId} · Soulbound ERC-5192 (Non-Transferable)
                   </span>
                 </div>
 

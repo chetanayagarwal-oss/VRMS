@@ -27,3 +27,15 @@ dist-ssr
 .env
 .env.*
 !.env.example
+
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/.pytest_cache/
+*/__pycache__/
+*.pyc
+
+# Foundry / Solidity
+contracts/out/
+contracts/cache/
+
