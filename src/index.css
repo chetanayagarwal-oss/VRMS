@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-ink-950 text-zinc-100 font-sans antialiased;
+  overscroll-behavior: none;
+  background-image:
+    radial-gradient(60rem 40rem at 50% -10%, rgba(124, 92, 255, 0.14), transparent 60%),
+    radial-gradient(40rem 30rem at 90% 110%, rgba(52, 211, 153, 0.07), transparent 60%);
+  background-attachment: fixed;
+}
+
+/* Prevent text selection / native drag while swiping */
+.swipe-surface {
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Hide scrollbar in filter pill rows (all browsers) */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
